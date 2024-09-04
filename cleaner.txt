@@ -4,7 +4,7 @@
 * Prestashop Cleaner
 */
 
-$version = '3.4.24';
+$version = '3.4.25';
 
 global $root_path, $root_directory, $limited;
 $initial_time_out = ini_get('max_execution_time');
