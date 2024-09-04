@@ -1146,7 +1146,7 @@ if(!$updating) {
                 }
                 if(preg_match('/netstat|move_uploaded_file|auto_append_file|auto_prepend_file|sys_get_temp_dir\(\),|exploit-db|jiamiphp|github\.io|0x5a455553|file_put_contents|\$_GET\[|\$_POST\[|trustisimpo rtant|EverythingIsLife|GLOBALS|fwrite|include%28|base64_decode|gzinflate|str_rot13|include_once|parse_str#|parse_str\/|__HALT_COMPILER|die#|uRlDecode\/\/|include\(|file_get_contents\(|fwrite|assert\ (|dyuweyrj|dyuweyrj4|pastebin|hex2bin%28|hex2bin\(|eval%28|eval\(/i', $fgc, $mmatches, PREG_OFFSET_CAPTURE)) {
                     $risk = $mmatches[0][0];
-                    $color_m = in_array(strtolower($risk), array('halt_compiler','die#','parse_str/','parse_str#','include/','include','die/','urldecode/' ,'urldecode#','eval%28','eval(','hex2bin%28','hex2bin(','str_rot13')) ?
+                    $color_m = in_array(strtolower($risk), array('halt_compiler','die#','parse_str/','parse_str#','include/','include','die/','urldecode/' ,'urldecode#','eval%28','eval(','hex2bin%28','hex2bin(','str_rot13')) ? 'red' : 'orange';
                     if(!$limited) {
                         $origins = array();
                         $fgc = preg_replace_callback(
