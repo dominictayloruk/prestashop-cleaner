@@ -1,0 +1,1573 @@
+<?php
+
+/*
+* Prestashop Cleaner
+*/
+
+$version = '3.4.23';
+
+global $root_path, $root_directory, $limited;
+$initial_time_out = ini_get('max_execution_time');
+if(ini_set('max_execution_time', -1) === false) {
+    $max_execution_time = $initial_time_out;
+}
+else {
+    $max_execution_time = '-1';
+}
+$limited = false;
+$memory = memoryTest();
+$memory_limit = $memory['memory_limit'];
+if(($max_execution_time != '-1' && ($max_execution_time < 300))
+    || ($memory_limit != '-1' && ($memory_limit < (512 * 1024 * 1024)))
+) {
+    $limited = true;
+}
+$settings = file_get_contents(dirname(__file__).'/config/settings.inc.php');
+if(preg_match('#define\(\'_PS_VERSION_\'[ ,]+\'(.*)\'\)#', $settings, $matches)) {
+    define('VERSION_NUMBER', $matches[1]);
+}
+if(!defined('VERSION_NUMBER')) {
+    $settings = file_get_contents(dirname(__file__).'/config/autoload.php');
+    if(preg_match('#define\(\'_PS_VERSION_\'[ ,]+\'(.*)\'\)#', $settings, $matches)) {
+        define('VERSION_NUMBER', $matches[1]);
+    }
+}
+if(!defined('VERSION_NUMBER')) {
+    $settings = file_get_contents(dirname(__file__) .'/app/AppKernel.php');
+    if(preg_match('#const VERSION = \'(.*)\'#', $settings, $matches)) {
+        define('VERSION_NUMBER', $matches[1]);
+    }
+}
+if(!defined('VERSION_NUMBER')) {
+    define('VERSION_NUMBER', '8.0.0.0');
+}
+if(version_compare(VERSION_NUMBER, '1.7.0.0', '>=')) {
+    $limited = true;
+}
+@ini_set('default_socket_timeout', 300);
+@date_default_timezone_set('Europe/London');
+register_shutdown_function('postmortem');
+$start_time = microtime(true);
+$ok = ($memory_limit == '-1') || ($memory_limit >= 512 * 1024 * 1024); // at least 512M?
+if(!$ok) {
+    die('The memory available on your server ('.$memory['display'].') is insufficient to run this script, please increase it to at least 512 MB');
+}
+$root_path = getcwd().'/';
+$root_directory = basename($root_path);
+$updating = false;
+$protocol = $_SERVER['HTTPS'] ? 'https://': 'http://';
+$arrContextOptions = array(
+    "ssl" => array(
+        "verify_peer" => false,
+        "verify_peer_name" => false,
+    ),
+    'http' => array(
+       'header' => array("Referer: ".$protocol.$_SERVER['HTTP_HOST'])
+   )
+);
+$admin_dir = false;
+$found = $files = 0;
+header('Proceed: '.__LINE__);
+$directory = new RecursiveDirectoryIterator('.');
+$directory = new DirFilter($directory);
+$scan = new RecursiveIteratorIterator($directory, RecursiveIteratorIterator::SELF_FIRST);
+$admins = [];
+foreach($scan as $file) {
+    $files++;
+    if($file->getFilename() == 'get-file-admin.php') {
+        $found++;
+        $admins[] = dirname($file);
+        if($found == 1) {
+            $admin_dir = str_replace('./', '', dirname($file));
+        }
+    }
+}
+$first_scan = 'Initial listing of '.$files.' files done in '.round(microtime(true) - $start_time, 3).' dry. ';
+$html = '<!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <style>
+                .slide-out{display: none;position: absolute;background-color:white;color:black;padding:20px 30px;max-height: 600px;left:50%;top:20px;transform:translate(-50% );overflow:auto;z-index:2;word-break:break-word;white-space:break-spaces;min-width:60%;max-width:90%;}
+            </style>
+            <meta charset="UTF-8">
+            <meta http-equiv="X-UA-Compatible" content="IE=edge">
+            <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+            <meta name="apple-mobile-web-app-capable" content="yes">
+            <meta name="apple-mobile-web-app-status-bar-style" content="default">
+            <meta name="mobile-web-app-capable" content="yes">
+            <meta name="HandheldFriendly" content="True">
+            <meta name="MobileOptimized" content="320">
+            <meta name="title" content="Prestashop Cleaner by @dominictayloruk">
+        </head>
+        <body style="background:black;padding:15px 15px 30px;color:white;">
+        <pre><h3 style="font-size: 1.3em;color:white;">Prestashop Cleaner by @dominictayloruk, version ' . $version .'<br><span style="font-size:0.7em;">This script is provided free of charge and under no circumstances can its use be paid or billed. For versions 8 and later, the integrity check is no longer performed.</span></h3><br>';
+if($found > 1) {
+    die($html.'<span style="color:red; font-size:1.5em;">Multiple directories of type /admin were found.<br>Please delete the unnecessary ones or the script will not know which one to scan<br>'.print_r($admins, 1).'</span></pre></body></html>');
+}
+if(!$admin_dir) {
+    die($html.'<span style="color:red">Unknown CMS. Script interrupted</span></pre></body></html>');
+}
+$encoded = substr(md5($root_path . $admin_dir), 0, 12);
+$latest_filename = $encoded.'.php';
+$current_url = strtok((isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on' ? "https" : "http") . "://$_SERVER[HTTP_HOST]$ _SERVER[REQUEST_URI]", '?');
+if (strtolower(php_sapi_name()) == 'cli') {
+   $current_url = $argv[0];
+}
+$current_script = basename($current_url);
+$new_url = str_replace($current_script, $latest_filename, $current_url);
+$suspicious_zip = new ZipArchive();
+$old_zip_filename = $root_path.'suspicious.zip';
+$daily_zip = $root_path.'suspicious_'.$encoded.'-'.date('Ymd').'.zip';
+$list = glob($root_path.'suspicious_'.$encoded.'-*zip');
+foreach($list as $file) {
+    if(time() - filemtime($file) > 86400*7) {
+        unlink($file);
+    }
+}
+$zip_filename = $root_path.'suspicious_'.$encoded.'.zip';
+if(file_exists($old_zip_filename)) {
+    @unlink($zip_filename);
+}
+if(file_exists($zip_filename)) {
+    @unlink($zip_filename);
+}
+$upd_fm_message = '';
+if(isset($_POST['update_filemanager'])) {
+    $zip = 'https://raw.githubusercontent.com/dominictayloruk/prestashop-cleaner/main/filemanager.zip';
+    $ext = pathinfo($zip, PATHINFO_EXTENSION);
+    $fm_zip = tempnam(sys_get_temp_dir(), $ext);
+    copy($zip, $fm_zip, stream_context_create($arrContextOptions));
+    if(file_exists($fm_zip) && strlen($fm_zip)) {
+        $zip = new ZipArchive;
+        if($zip->open($fm_zip) === TRUE) {
+            cleanDirectory($root_path.$admin_dir.'/filemanager');
+            $zip->extractTo($root_path.$admin_dir);
+            $zip->close();
+            $upd_fm_message = '<span style="color:#08db08">The directory '.$root_directory.'/**admin**/filemanager has been patched successfully.</span><br><br>';
+        }
+        else {
+            $upd_fm_message = '<span style="color:red">Unable to update directory '.$root_directory.'/**admin**/filemanager</span><br><br>';
+        }
+    }
+    @unlink($fm_zip);
+}
+if(!preg_match('/modules/i', $root_path) && file_exists('init.php')) {
+    header('Proceed: '.__LINE__);
+    $fgc = @file_get_contents('https://raw.githubusercontent.com/dominictayloruk/prestashop-cleaner/main/cleaner.txt', false, stream_context_create($arrContextOptions));
+    if($fgc) {
+        if((bool)preg_match('/version = \'(.+)\'/i', $fgc, $matches) || $current_script != $latest_filename) {
+            if(version_compare($matches[1], $version, '>')) {
+                if((bool)preg_match('/class_index\.php/', $fgc)) {
+                    if(!file_put_contents($latest_filename, $fgc.PHP_EOL .'/* Version downloaded from github.com/dominictayloruk/prestashop-cleaner - ' . date('Ymd H:i:s') .'*/')) {
+                        die('<span style="color:red">Unable to update file. Insufficient write permissions</span></pre></body></html>');
+                    }
+                    else {
+                        if($current_script == 'cleaner.php') {
+                            file_put_contents('cleaner.php', $fgc);
+                        }
+                        if($current_script != $latest_filename) {
+                            if(file_exists($root_path.$current_script))
+                                unlink($root_path.$current_script);
+                            $list = glob($root_path.'suspicious_*zip');
+                            foreach($list as $file) {
+                                unlink($file);
+                            }
+                        }
+                    }
+                    if(file_exists($latest_filename)) {
+                        $html .= $first_scan.'<br><br>';
+                        header('Refresh: 1; url='.$new_url);
+                        echo $html;
+                        echo $upd_fm_message;
+                        echo '<span style="color:red">Your version needs to be updated. Downloading the latest version '.(isset($matches) ? $matches[1] : '').' and running...</span></pre>';
+                        sleep(2);
+                        $updating = true;
+                    }
+                }
+            }
+            else {
+                $html .= $upd_fm_message;
+                $html .= '<p style="color:white;margin-top: 0;">Memory OK ('.$memory['display'].'). You have the latest version of the script -> Starting...<br>You can create a cron job in the cronjobs module once a week by calling '.$current_url.' automatically and receive the result by email.</p>';
+            }
+        }
+    }
+    else {
+        $html .= '<p style="color:white;margin-top: 0;">Memory OK. Version check impossible -> Starting with current version...<br>You can create a cron job in the cronjobs module once a week by calling '.$current_url.' automatically and receive the result by email.</p>';
+    }
+}
+else
+    die('<pre><span style="color:red">This script must be placed at the root of your site (where your Prestahop is installed on your ftp) and nowhere else</span></pre></body></html>');
+if(!$updating) {
+    $limits = posix_getrlimit();
+    $recursion_limit = (int)($limits['soft stack'] / 512);
+    if(version_compare(phpversion(), '7.0.0', '<')) {
+        @ini_set('pcre.jit', 0);
+        @ini_set('pcre.backtrack_limit', $recursion_limit);
+        @ini_set('pcre.recursion_limit', $recursion_limit);
+    }
+    else {
+        @ini_set('pcre2.jit', 0);
+        @ini_set('pcre2.backtrack_limit', 500000);
+        @ini_set('pcre2.recursion_limit', 500000);
+    }
+    if(function_exists('newrelic_ignore_transaction')) {
+        newrelic_ignore_transaction();
+    }
+    $html .= $first_scan.'<br><br>';
+    if($current_script != 'cleaner.php') {
+        $html .= '<h4 style="font-size: 1.1em;margin-bottom: 1em;margin-top: 0.3em;color:yellow">For security reasons the script url has been changed. Note the new url if you close this page.<br>If you forgot the url, re-run cleaner.php after re-downloading it</h4>';
+        if(file_exists($root_path.'cleaner.php')) {
+            @unlink($root_path.'cleaner.php');
+        }
+    }
+    $integrity = true;
+    $zip_ok = true;
+    if($suspicious_zip->open($zip_filename, ZipArchive::CREATE) !== TRUE) {
+        $zip_ok = false;
+    }
+    @ini_set('display_errors', 'off');
+    error_reporting(0);
+    $md5_list = false;
+    if(version_compare(VERSION_NUMBER, '1.6.1.26', '>=') && version_compare(VERSION_NUMBER, '1.7.0.0', '<')) {
+        $api_url = 'https://github.com/dominictayloruk/prestashop-cleaner/main/scripts/xml/'.VERSION_NUMBER.'.json';
+    }
+    else {
+        $api_url = 'https://md5.enter-solutions.com/json/'.VERSION_NUMBER.'.json';
+    }
+    header('Proceed: '.__LINE__);
+    $md5_file = file_get_contents($api_url, false, stream_context_create($arrContextOptions));
+    if(version_compare(VERSION_NUMBER, '8.0.0.0', '>')) {
+        $md5_file = false;
+    }
+    if($md5_file) {
+        $md5_list = json_decode($md5_file);
+    }
+    if(!is_object($md5_list)) {
+        $md5_list = false;
+    }
+    $html .= '<span style="color:white;">If cleanup or deletion messages are displayed <b style="color:red">in red</b>, your e-store is likely to have been <b>attacked and has been urgently protected</b><br>but it is necessary to <b>RESTORE the modified files</b>, <b>CHANGE the name of your admin directory and <b>CHANGE the passwords of your store employees</b></span>.<br><br>';
+    if(empty($md5_list)) {
+        $integrity = false;
+        $html .= '<b style="color:red">Source files ignored for this version: '.VERSION_NUMBER .'. md5 checks will not be performed.</b><br>';
+    }
+    else {
+        header('Proceed: '.__LINE__);
+    }
+// START
+    $force = true;
+    $key = $bad = $bad1 = $bad2 = $bad3 = $found_admin = $error_js = $bad_perms =
+    $bad_image = $error_line = $bad_found = $bad_infected = $bad_heuristic = 0;
+    $indexes = $not_exist = $escaped = '';
+    $full = isset($_POST['full']);
+    $dot_array = array('.', '..', './.');
+    $files_perm = '<h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 1.2em;color:white;">Rights check:</h4>';
+    $dot_files = '<h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 1.2em;color:white;">Searching for added .xxx files known to be infections:</h4>';
+    $htaccess_files = '<h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 1.2em;color:white;">Searching for added or modified htaccess files:</ h4>';
+    $admin_files = '<br><h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 0.3em;color:white;">Admin file control:</h4> ';
+    $heuristic = '<br><h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 0.3;color:white;">Check for sensitive files known to be modified:</h4>';
+    $scripts = '<br><h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 0.3;color:white;">JS script control:</h4>' ;
+    $images = '<br><h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 0.3;color:white;">Controlling images that can contain script:</ h4>';
+    $infects = '<br><h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 0.3;color:white;">Search for known infections:</h4>';
+    $bad_added_files = '<br><h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 0.3;color:white;">Security check on independent files known sirables:</h4>';
+    $core_control = '<br><h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 0.3;color:white;">Security control on core php files:</h4>';
+    $modules = '<h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 1.2em;color:white;">Module Vulnerability Scan (For information purposes only. If you are unsure how to interpret the code, please seek professional advice):</h4>';
+    $to_be_monitored = array('./config/alias.php,./config/autoload.php,./config/bootstrap.php,./config/config.inc.php,./config/defines.inc.php, ./config/defines_uri.inc.php,./classes/db/Db.php,./classes/Dispatcher.php,./classes/Hook.php,./controllers/front/IndexController.php,./classes/ module/Module.php,./classes/controller/FrontController.php,./tools/smarty/sysplugins/smarty_internal_templatebase.php');
+    $unwanted = array('XsamXadoo_Bot.php,acjvwqih.php,indexx.php,FeMlvSj.jpeg,FeMlvSj.php,bsedtnmx.php,paypalobject.com,rgkpuyoi.php,zok.php,api_1.php,z.php, yetim.php,samax.php,wevgodux.php,noxmox.php,XsamXadoo_deface.php,0x666.php,f.php,umcds.php,eval-stdin.php,Xsam_Xadoo.html,xsamxado o.php,xsamxadoo1.php,haxor.php,h4x0r.html,haxor.html,phantom.html,new_readme.php,404.php,wp-log.php,a.txt,archive.php,Gass.html, 19855c.php,gasshop.php,getfile.php,m.php,m1.php,moban.html,popup-pomo.php,up.php,V2-plug.php,upload.php,xboo.php.png, wS0.phtml,wso.php,Mage.php ,xGASSx.php,02ea,zaz.php,zip.php,hous.php.png,f26945b1.ico,ini.php,web-right.php,MARIJUANA.php,karakaroa.php,crack_self_restore.php,checkbex.php ,down.php,enfile.php,gh.php,pinuseren.php,wp-head.php,wp-site.php,wp-info.php,wp-admin.php,Licensse.php,wp-includes.php ,wp-config-sample.php,jiema.php,cangma.php,cawpf.php,nowp.php,nowpf.php,cyborg_tmp.php,jj.php,syng.php,new.php,wp-login.php ,alfanew.php,ph.php,pas.php');
+    $unwanted = array_map('strtolower', $unwanted);
+    $unwanted2 = array('./cache/update.php,./classes/tmp/,./classes/module/tmp/,./controllers/front/tmp/,./modules/tmp/,./config/ tmp/,./Core/tmp/,./translations/content.php,./upgrade.php');
+    $class_regex = '~
+                ^\s*(?:abstract)?\s*(?:class|interface|trait)\s+
+                (?P<class>\S+)[^{}]+(\{
+                (?:[^{}]*|(?2))*
+                \})~mx';
+    $function_regex = '~
+                ^\s*function \s+
+                (?<name>\w+)\s*
+                \((?<param>[^\)]*)\)\s*
+                (?<body>\{(?:[^{}]+|(?&body))*\})
+                ~mx';
+    $re = '/(?:\/\*([^*]|(\*+([^*\/])))*\*\/)|(?:\/\/.*$) |(?:#.*$)|(?:\'(?:[^\'\\\\]|\\\\.)*\'|"(?:[^"\\\\] |\\\\.)*")/mU';
+    $bad_writable = array(204, 0204, 40204, 777, 0777, 40777);
+    $count_files = 0;
+
+    foreach($scan as $file) {
+        $count_files++;
+        $filename = $file->getFilename();
+        $path_parts = $file->getExtension();
+        if(in_array($filename, $dot_array)
+            || in_array($path_parts, array('csv', 'xml', 'doc', 'pdf', 'xlt', 'tmp', 'gz', 'zip', 'gzip'))
+        ) {
+            continue;
+        }
+        $perms = decoct(fileperms($file));
+        if(in_array($perms, $bad_writable)) {
+            $bad_perms++;
+            if($file->isDir()) {
+                $files_perm .= '<b style="color:orange">Incorrect permissions ('.$perms.') for directory: '.str_replace('.', '', $file).'. Must be 755 or 705</b><br>';
+            }
+            else {
+                if(in_array($perms, array(204, 0204, 40204)))
+                    $files_perm .= '<b style="color:red">Incorrect permissions ('.$perms.') for (hacked) file: '.str_replace('.', '', $file).'. Must be 644 or 604</b><br>';
+                else
+                    $files_perm .= '<b style="color:orange">Incorrect permissions ('.$perms.') for file: '.str_replace('.', '', $file).'. Must be 644 or 604</b><br>';
+            }
+        }
+        $script_name = str_replace('./', '', str_replace('./'.$admin_dir, 'admin', $file));
+        // Unwanted
+        header('Proceed: '.__LINE__);
+        if(in_array(strtolower($filename), $unwanted)) {
+            if(version_compare(VERSION_NUMBER, '1.6.0.0', '<') && ($file == './404.php')) {
+                continue;
+            }
+            if(file_exists($file)) {
+                $fgc = file_get_contents($file);
+                $bad_found++;
+                $bad_added_files .= displayFileError('red', 'Unwanted file detected', $script_name, $fgc);
+                if($zip_ok) {
+                    $suspicious_zip->addFile($file, $script_name);
+                }
+                @chmod($file, 0644);
+                if(unlink($file)) {
+                    $bad_added_files .= '<b style="color:#08db08">File '.$script_name.' junk deleted</b><br>';
+                }
+                else {
+                    $bad_added_files .= '<b style="color:red">!!! Failed to delete this file - '.$script_name.' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                }
+            }
+            continue;
+        }
+        if(in_array($file, $unwanted2)) {
+            if(file_exists($file)) {
+                $fgc = file_get_contents($file);
+                $bad_found++;
+                $bad_added_files .= displayFileError('red', 'Unwanted file detected', $script_name, $fgc);
+                if($zip_ok) {
+                    $suspicious_zip->addFile($file, $script_name);
+                }
+                @chmod($file, 0644);
+                if(unlink($file)) {
+                    $bad_added_files .= '<b style="color:#08db08">File '.$script_name.' junk deleted</b><br>';
+                }
+                else {
+                    $bad_added_files .= '<b style="color:red">!!! Failed to delete this file - '.$script_name.' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                }
+            }
+            continue;
+        }
+        // Bad dot files
+        header('Proceed: '.__LINE__);
+        $path_parts = $file->getExtension();
+        if($path_parts == 'php') {
+            $full_path = explode('/', $file->getPathname());
+            $item_file = array_pop($full_path);
+            if(is_array($full_path) && (count($full_path) > 1)) {
+                if($item_file == '.'.end($full_path).'.php') {
+                    $bad1++;
+                    $fgc = file_get_contents($file);
+                    @chmod($file, 0644);
+                    if(!unlink($file)) {
+                        $dot_files .= displayFileError('red', 'Dangerous file that must be deleted (deletion failed):', $file, $fgc);
+                    }
+                    else {
+                        $dot_files .= displayFileError('red', 'Dangerous file deleted', $file, $fgc);
+                    }
+                    continue;
+                }
+            }
+        }
+        // Scan bad module names
+        header('Proceed: '.__LINE__);
+        if($file->isDir()
+            && (dirname($file) == './modules')
+        ) {
+            if(preg_match('~.+(?:_|__|\.old|_old|\.bak|\.zip|_bak|sauv_|bkp|-|--|gapi|karakaroa|ps_analytics)$~i' , $file)) {
+                $modules .= '<b style="color:orange">Unwanted directory detected (delete or save elsewhere): '.str_replace('.', '', $file).'</b><br>';
+            }
+            continue;
+        }
+        if(!$file->isDir()) {
+            if(preg_match('/\.\/log\/|\/cache\/class_index\.php|\/sytem\/|\/sytems\/|\/cache\/classes\/index\.php/' , $file)) {
+                continue;
+            }
+            $path_parts = $file->getExtension();
+            if(!$full && filesize($file) > 450*1024) {
+                if(in_array($path_parts, array('php', 'js', 'sql'))) {
+                    $escaped .= '- '.$script_name.' ('.round(filesize($file)/1024).' KB)<br>';
+                }
+                continue;
+            }
+            // Integrity modules directory
+            header('Proceed: '.__LINE__);
+            if(dirname($file) == './modules') {
+                if(($filename != '.htaccess') && !$path_parts) {
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                    $fgc = file_get_contents($file);
+                    $modules .= displayFileError('orange', 'File without extension detected', $file, $fgc);
+                    continue;
+                }
+                else {
+                    if(!in_array($filename, array('index.php', '.htaccess'))) {
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                        $fgc = file_get_contents($file);
+                        @chmod($file, 0644);
+                        if(!unlink($file)) {
+                            $modules .= displayFileError('red', 'Unwanted file must be deleted (deletion failed):', $file, $fgc);
+                        }
+                        else {
+                            $modules .= displayFileError('red', 'Unwanted element deleted in /modules', $file, $fgc);
+                        }
+                        continue;
+                    }
+                }
+            }
+            // Bad htaccess files
+            header('Proceed: '.__LINE__);
+            if($filename === '.htaccess') {
+                $fgc = file_get_contents($file);
+                if(preg_match('/suspected|phtml/i', $fgc, $mmatches, PREG_OFFSET_CAPTURE)) {
+                    if(!empty($md5_list->{$script_name}) && ($md5_list->{$script_name} != md5_file($file))) {
+                        $bad2++;
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                        if(filesize($file) < 150) {
+                            @chmod($file, 0644);
+                            if(!unlink($file)) {
+                                $htaccess_files .= displayFileError('red', 'Added .htaccess file that must be deleted (deletion failed):', $file, $fgc);
+                            }
+                            else {
+                                $htaccess_files .= displayFileError('red', 'Unwanted .htaccess file deleted', $file, $fgc);
+                            }
+                        }
+                        else {
+                            $bad3++;
+                            $htaccess_files .= displayFileError('red', 'Modified .htaccess file that must be checked:', $file, $fgc);
+                        }
+                        continue;
+                    }
+                }
+            }
+            // Admin
+            header('Proceed: '.__LINE__);
+            if(preg_match('/\.\/'.$admin_dir.'\//', $file)) {
+                if(preg_match('/filemanager/i', $file) && (version_compare(VERSION_NUMBER, '1.6.0.0', '>='))) {
+                    continue;
+                }
+                if(preg_match('/(cleaner|ajax-upgradetab|adminer|pfm|sytem|htaccess|autoupgrade)/i', $file)) {
+                    continue;
+                }
+                $fgc = file_get_contents($file);
+                if(!empty($md5_list->{$script_name}) && ($md5_list->{$script_name} != md5_file($file))) {
+                    $content = $fgc;
+                    if($filename == 'index.php') {
+                        $content = cleanIndex($content);
+                        if(empty($content)) {
+                            $admin_files .= displayFileError('#08db08', 'File modified from original version. Content OK', str_replace('admin', '**admin**', $script_name), $fgc);
+                        }
+                        else {
+                            $found_admin++;
+                            $integrity = false;
+                            if($zip_ok) {
+                                $suspicious_zip->addFile($file, $script_name);
+                            }
+                            if(preg_match('/(\/\*[0-9a-f]{5}\*\/|trustisimportant|EverythingIsLife|\\x[0-9a-f]{2,})/i', $ content, $matches)) {
+                                $admin_files .= displayFileError('red', 'MD5 ADMIN INTEGRITY: Index.php file infected ('.$matches[0].'). Content must be restored', str_replace('admin', '** admin**', $script_name), $content);
+                            }
+                            else {
+                                $admin_files .= displayFileError('red', 'MD5 ADMIN WARNING: File different from original', str_replace('admin', '**admin**', $script_name), $content);
+                            }
+                        }
+                    }
+                    else {
+                        $found_admin++;
+                        $integrity = false;
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                        $admin_files .= displayFileError('orange', 'MD5 ADMIN WARNING: File different from original', str_replace('admin', '**admin**', $script_name), $content);
+                    }
+                    continue;
+                }
+                if($md5_list && empty($md5_list->{$script_name})) {
+                    if($filename == 'index.php') {
+                        $content = cleanIndex($fgc);
+                        if(empty($content)) {
+                            $indexes .= displayFileError('#08db08', 'File does not exist in original version. Content OK', str_replace('admin', '**admin**', $script_name), $fgc);
+                        }
+                        else {
+                            $found_admin++;
+                            if(preg_match('/(\/\*[0-9a-f]{5}\*\/|\.$O[4]\.|=urldecode|\\x[0-9a-f]{ 2,})/i', $content, $matches)) {
+                                $indexes .= displayFileError('red', 'MD5 INTEGRITY: Index.php file infected ('.$matches[0].'). Content must be checked', str_replace('admin', '* *admin**', $script_name), $content);
+                            }
+                            else {
+                                $indexes .= displayFileError('red', 'File does not exist in original version. Content to be checked', str_replace('admin', '**admin**', $script_name), $content);
+                            }
+                        }
+                    }
+                    else {
+                        $found_admin++;
+                        $admin_files .= displayFileError('orange', 'File does not exist in original version. Content to be checked', str_replace('admin', '**admin**', $script_name), $fgc);
+                    }
+                    continue;
+                }
+            }
+            // JS files
+            header('Proceed: '.__LINE__);
+            if(preg_match('/\.\/js\//', $file)
+                && $path_parts == 'php'
+                && !in_array($filename, array('retro-compat.js.php', 'index.php', 'jquery.noConflict.php'))
+            ) {
+                $error_js++;
+                $scripts .= '<b style="color:red">Unknown PHP file found in: '.$file.'</b><br>';
+                $image_file = str_replace('.php', '.jpeg', $file);
+                if(file_exists($image_file)) {
+                    $scripts .= '<b style="color:red">Found a false associated image: '.$image_file.'</b><br>';
+                    if($force) {
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                            $suspicious_zip->addFile($image_file, $script_name);
+                        }
+                        @chmod($file, 0644);
+                        if(!unlink($file)) {
+                            $scripts .= '<b style="color:red">Failed to delete this file - '.str_replace('.', '', $file).' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                        }
+                        else {
+                            $scripts .= '<b style="color:#08db08">>>> Deleted: '.$script_name.'</b><br>';
+                        }
+                        @chmod($image_file, 0644);
+                        if(!unlink($image_file)) {
+                            $scripts .= '<b style="color:red">Failed to delete this file - '.str_replace('.', '', $image_file).' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                        }
+                        else {
+                            $scripts .= '<b style="color:#08db08">>>> Fake image '.str_replace('.', '', $image_file).' deleted</b><br>';
+                        }
+                        continue;
+                    }
+                }
+                else {
+                    $scripts .= '<b style="color:red">Unexpected PHP file to check (or delete) imperatively: '.$script_name.'</b><br>';
+                }
+            }
+
+            if(preg_match('/\.\/js\//', $file)) {
+                if($path_parts == 'json') {
+                    continue;
+                }
+                if(!empty($md5_list->{$script_name})) {
+                    if($md5_list->{$script_name} != md5_file($file)) {
+                        $fgc = file_get_contents($file);
+                        $error_js++;
+                        if($zip_ok && is_file($file)) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                        $scripts .= displayFileError('red', 'MD5 ADMIN WARNING: File different from original', $file, $fgc);
+                    }
+                    continue;
+                }
+
+                if(preg_match('~[a-zA-Z0-9]{5,5}\.js~', $filename) || preg_match('~[0-9]{3,30}~', $filename )) {
+                    $fgc = file_get_contents($file);
+                    $error_js++;
+                    if($zip_ok && is_file($file)) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                    $fgc = file_get_contents($file);
+                    if(preg_match('/btoa\(|atob\(|eval\(function\(/i', $fgc) || ​​preg_match('~(:?\\\\x[0-9A-F]{2 }){10}~mi', $fgc)) {
+                        $scripts .= '<b style="color:red">Infected JS file found in: '.$file.'</b><br>';
+                        if($force) {
+                            if($zip_ok) {
+                                $suspicious_zip->addFile($file, $script_name);
+                            }
+                            @chmod($file, 0644);
+                            if(!unlink($file)) {
+                                $scripts .= '<b style="color:red">Failed to delete this file - '.str_replace('.', '', $file).' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                            }
+                            else {
+                                $scripts .= '<b style="color:#08db08">>>> Deleted: '.$script_name.'</b><br>';
+                            }
+                        }
+                    }
+                    else {
+                        $message = $md5_list ? 'JS file added, not present in original version' : 'JS file to check';
+                        $scripts .= displayFileError('red', $message, $file, $fgc);
+                    }
+                }
+                $filesize = filesize($file);
+                if($filesize == 33637 || $filesize == 33082) {
+                    $error_js++;
+                    $scripts .= '<b style="color:red">Infected JS file found in: '.$script_name.'</b><br>';
+                    if($force) {
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                        @chmod($file, 0644);
+                        if(!unlink($file)) {
+                            $scripts .= '<b style="color:red">Failed to delete this file - '.str_replace('.', '', $file).' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                        }
+                        else {
+                            $scripts .= '<b style="color:#08db08">>>> Deleted: '.$script_name.'</b><br>';
+                        }
+                    }
+                    continue;
+                }
+            }
+            // Themes
+            header('Proceed: '.__LINE__);
+            if(preg_match('/\.\/themes\//', $file)
+                && (in_array($path_parts, array('tpl', 'js', 'php')))
+            ) {
+                $fgc = file_get_contents($file);
+                if(preg_match('/httpd\.conf|monarx|auto_append_file|auto_prepend_file|51la\.icw8\.com|\/a1\.txt|indexx\.php|c3e34653504601739f7cbb3f79bb63d2|vhosts\.conf|fetchmailrc|shell_exec|0x5aa5| find_bl\(| f_id_daww| DateStripeV| hex2a\(| sanitas\(| smenu\(|hashcracking\.ru|rednoize\.com|trustisimportant|\.$O[4]\.|=urldecode|\.fun$| crackfor\.me| wso| f_id_daww|btoa\(|atob\(|eval\(function\(/i', $fgc, $matches) || preg_match('~(:?\\\\x[0-9A-F]{2}){10}~mi', $fgc, $matches)) {
+                    $bad_infected++;
+                    $infects .= displayFileError('red', 'Possible injection, file to check ('.$matches[0].')', $file, $fgc);
+                    if($force) {
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                    }
+                }
+            }
+            // Images
+            header('Proceed: '.__LINE__);
+            if(preg_match('/\.\/img\//', $file)) {
+                if(stripos(file_get_contents($file), 'PHNjcmlwd') !== false
+                    || stripos(file_get_contents($file), 'wlmcjNHP') !== false) {
+                    $bad_image++;
+                    $images .= '<b style="color:red">Infected img file found on your store: '.$file.'</b><br>';
+                    if($force) {
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                        @chmod($file, 0644);
+                        if(!unlink($file)) {
+                            $images .= '<b style="color:red">Failed to delete this file - '.str_replace('.', '', $file).' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                        }
+                        else {
+                            $images .= '<b style="color:#08db08">>>> Deleted '.$script_name.'</b><br>';
+                        }
+                    }
+                }
+                continue;
+            }
+            // Integrity
+            header('Proceed: '.__LINE__);
+            if($filename === 'defines.inc.php') {
+                $fgc = file_get_contents($file);
+                $lines = explode("\n", $fgc);
+                foreach($lines as $key => $line) {
+                    if(preg_match("/include_once\((.*)'\);/i", $line, $matches)) {
+                        $bad_infected++;
+                        $bad_heuristic++;
+                        $integrity = false;
+                        $matches[1] = str_replace('$'.'_SERVER[\'DOCUMENT_ROOT\'].', '', $matches[1]);
+                        $infected = trim($matches[1], '/');
+                        if(file_exists($infected)) {
+                            $infects .= '<b style="color:red">Unwanted file detected: ' . $infected .'</b><br>';
+                            $bad_infected++;
+                            $integrity = false;
+                            if($force) {
+                                if($zip_ok) {
+                                    $suspicious_zip->addFile($infected, str_replace('.', '', $infected));
+                                }
+                                @chmod($file, 0644);
+                                if(!unlink($infected)) {
+                                    $infects .= '<b style="color:red">Failed to delete this file - '.str_replace('.', '', $infected).' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                                }
+                                else {
+                                    $infects .= '<b style="color:#08db08">>>> Deleted: '.$infected.'</b><br>';
+                                }
+                            }
+                        }
+                        if($force) {
+                            unset($lines[$key]);
+                            $lines = implode("\n", $lines);
+                            @chmod($file, 0644);
+                            file_put_contents($file, $lines);
+                            $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                        }
+                        break 1;
+                    }
+                }
+            }
+            if($filename === 'AdminLoginController.php') {
+                $fgc = file_get_contents($file);
+                if(preg_match('/base64/i', $fgc)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    if($force) {
+                        $fgc = preg_replace('/\$path(.*)PrestaShopLogger/ims', '/* Virus infection fixed already */ PrestaShopLogger', $fgc);
+                        $integrity = false;
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                        $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+                if(preg_match('/this->trans/i', $fgc) && preg_match('/displayError/i', $fgc) && !preg_match('/registerSession/i', $fgc)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    if($force) {
+                        $fgc = str_replace("if(!Tools::getValue('stay_logged_in'))", "if(method_exists(\$cookie, 'registerSession')) {\$cookie->registerSession(new EmployeeSession());} if(!Tools::getValue('stay_logged_in'))", $fgc);
+                        $integrity = false;
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                        $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+            }
+            if($filename === 'Controller.php') {
+                $fgc = file_get_contents($file);
+                if(preg_match('/(.*)REQUEST_URI(.*)/', $fgc, $matches)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $fgc = str_replace($matches[0], 'if (0) '.$matches[0], $fgc);
+                    $infects .= displayFileError('red', 'MD5 INTEGRITY >>>> Line modified: '.$matches[0], $file, $fgc);
+                    $integrity = false;
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+                if(preg_match('/=base64/i', $fgc) && !preg_match('/Virus infection fixed already/i', $fgc)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $fgc = preg_replace('/\$html.=base64_decode/ims', '/* Virus infection fixed already */ // $html.=base64_decode', $fgc);
+                    $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    $integrity = false;
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+                if(preg_match('/base64/i', $fgc) && preg_match('/_hash/i', $fgc) && !preg_match('/Virus_infection_fixed_already/i', $fgc)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $fgc = str_replace("_hash'", "_hash_commented_Virus_infection_fixed_already_" . uniqid() . "'", $fgc);
+                    $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    $integrity = false;
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+            }
+            if($filename === 'FrontController.php') {
+                $fgc = file_get_contents($file);
+                if(preg_match('/=base64/i', $fgc) && !preg_match('/Virus infection fixed already/i', $fgc)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $fgc = preg_replace('/\$html.=base64_decode/ims', '/* Virus infection fixed already */ // $html.=base64_decode', $fgc);
+                    $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    $integrity = false;
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+            }
+            if($filename === 'Db.php') {
+                $fgc = file_get_contents($file);
+                if(preg_match('/base64/i', $fgc) && !preg_match('/Virus_infection_fixed_already/i', $fgc)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $fgc = str_replace("_hash'", "_hash_commented_Virus_infection_fixed_already_" . uniqid() . "'", $fgc);
+                    $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    $integrity = false;
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+            }
+            if($filename === 'Module.php') {
+                $fgc = file_get_contents($file);
+                $search = "-2) == '')";
+                $search_preg_match = "-2\) == ''\)";
+                $fix = "-2) == '?>')";
+                if(preg_match("/$search_preg_match/i", $fgc)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $fgc = str_replace($search, $fix, $fgc);
+                    $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    $integrity = false;
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+                $search = 'encoding="UTF-8"';
+                $search_missing_preg_match = 'encoding="UTF-8" \?>';
+                $search_preg_match = 'encoding="UTF-8"';
+                $fix = 'encoding="UTF-8" ?>';
+                if(preg_match("/$search_preg_match/i", $fgc) && !preg_match("/$search_missing_preg_match/i", $fgc)) {
+                    $fgc = str_replace($search, $fix, $fgc);
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    $integrity = false;
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+            }
+            if($filename === 'alias.php') {
+                $fgc = file_get_contents($file);
+                if(preg_match('/(.*)md5(.*)/i', $fgc, $matches)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $fgc = str_replace($matches[0], 'if (0) '.$matches[0], $fgc);
+                    $infects .= displayFileError('red', 'MD5 INTEGRITY >>>> Line modified: '.$matches[0], $file, $fgc);
+                    $integrity = false;
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+            }
+            if($filename === 'smarty_internal_templatebase.php') {
+                $fgc = file_get_contents($file);
+                $search = 'eval("" . $';
+                $search_preg_match = 'eval\(\"\" . \$';
+                $fix = '/* Virus infection fixed already */ eval("?>" . $';
+                if(preg_match("/$search_preg_match/i", $fgc)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $integrity = false;
+                    $fgc = str_replace($search, $fix, $fgc);
+                    $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+                $search = "'/(<%|%>|<\?php|<\?|\)/'";
+                $search_preg_match = preg_quote("'/(<%|%>|<\?php|<\?|\)/'", '/');
+                $fix = "'/(<%|%>|<\?php|<\?|\?>)/'";
+                if(preg_match("/$search_preg_match/i", $fgc)) {
+                    $bad_infected++;
+                    $bad_heuristic++;
+                    $integrity = false;
+                    $fgc = str_replace($search, $fix, $fgc);
+                    $infects .= '<b style="color:red">>>> Fixed: '.$script_name.'</b><br>';
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                    }
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+                continue;
+            }
+            // Files without extension
+            header('Proceed: '.__LINE__);
+            if(preg_match('/\/config\/|\/classes\/|\/controllers\/|\/app\/|\/var\/|\/tools\//i', $file)) {
+                if(!$path_parts) {
+                    $fgc = file_get_contents($file);
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                    //$integrity = false;
+                    $core_control .= displayFileError('orange', 'File without extension detected', $script_name, $fgc);
+                    continue;
+                }
+            }
+            // Smarty patch
+            header('Proceed: '.__LINE__);
+            if(preg_match('/config\/smarty\.config\.inc\.php/i', $file)) {
+                $fgc = file_get_contents($file);
+                if(preg_match('/if \(Configuration::get\(\'PS_SMARTY_CACHING_TYPE\'\)/', $fgc, $matches)) {
+                    $fgc = preg_replace('/if \(Configuration::get\(\'PS_SMARTY_CACHING_TYPE\'\)/', 'if(false && Configuration::get(\'PS_SMARTY_CACHING_TYPE\')', $fgc);
+                    if($force) {
+                        @chmod($file, 0644);
+                        file_put_contents($file, $fgc);
+                        $core_control .= '<b style="color:#08db08">File '.$script_name.' patched successfully (SQL injection possible by Smarty cache)</b><br>';
+                    }
+                }
+                if(version_compare(VERSION_NUMBER, '1.7.9.9', '<') && preg_match('~if\(false && Configuration::get~', $fgc)) {
+                    $core_control .= '<b style="color:#08db08">Patch control (SQL injection possible by Smarty cache) on '.$script_name.' => OK</b><br>';
+                }
+                continue;
+            }
+            // Core control
+            header('Proceed: '.__LINE__);
+            if(($md5_list != false)
+                && !preg_match('/\.\/modules\//', $file)
+            ) {
+                $error2 = 0;
+                $original = true;
+                $fgc = file_get_contents($file);
+                if(!empty($md5_list->{$script_name})
+                    && ($md5_list->{$script_name} != md5_file($file))
+                    && ($path_parts == 'php')
+                ) {
+                    if($filename == 'index.php') {
+                        $content = cleanIndex(file_get_contents($file));
+                        if(empty($content)) {
+                            $core_control .= '<b style="color:#08db08">MD5 INTEGRITY: Index.php file modified compared to the original version. Content OK: '.$script_name.'</b><br>';
+                        }
+                        else {
+                            $original = false;
+                            $integrity = false;
+                            $error2++;
+                            if($zip_ok) {
+                                $suspicious_zip->addFile($file, $script_name);
+                            }
+                            if(preg_match('/(\/\*[0-9a-f]{5}\*\/|\\x[0-9a-f]{2,})/i', $fgc, $matches ))
+                                $core_control .= displayFileError('red', 'MD5 INTEGRITY: Index.php file infected ('.$matches[0].'). Content must be restored', $script_name, $fgc);
+                            else
+                                $core_control .= displayFileError('red', 'MD5 INTEGRITY: Index.php file modified from the original version. Content to check', $script_name, $fgc);
+                        }
+                        continue;
+                    }
+                    else {
+                        $original = false;
+                        $integrity = false;
+                        $error2++;
+                        if(preg_match('/\$GLOBALS|\$_GET\[Â§\]|jiamiphp|monarx|gzinflate\(substr\(/i', $fgc, $matches)) {
+                            if(in_array($file, $to_be_monitored)) {
+                                $bad_heuristic++;
+                                $core_control .= displayFileError('red', 'MD5 INTEGRITY: File different from original and infected ('.$matches[0].'). Content must be restored', $script_name, $fgc);
+                            }
+                            else {
+                                $heuristic .= displayFileError('red', 'MD5 INTEGRITY: File different from original and infected ('.$matches[0].'). Content must be restored', $script_name, $fgc);
+                            }
+                            if($zip_ok) {
+                                $suspicious_zip->addFile($file, $script_name);
+                            }
+                        }
+                        else {
+                            if($zip_ok) {
+                                $suspicious_zip->addFile($file, $script_name);
+                            }
+                            if(in_array($file, $to_be_monitored)) {
+                                $bad_heuristic++;
+                                $heuristic .= displayFileError('orange', 'Checking '.$filename.': PHP file modified compared to original version', $script_name, $fgc);
+                            }
+                            else {
+                                $core_control .= displayFileError('orange', 'MD5 INTEGRITY: PHP file modified compared to the original version. Content to control', $root_directory.'/'.$script_name, $fgc);
+                            }
+                        }
+                        continue;
+                    }
+                }
+                if(($filename != $latest_filename)
+                    && !isset($md5_list->{$script_name})
+                    && !preg_match('/modules\/|download\/|media\/|\/lang\/|\/mails\//', $file)
+                    && ($path_parts == 'php')
+                ) {
+                    if(preg_match_all('#<\?php(?: ){0,1}#mi', $fgc) > 1) {
+                        $bad_infected++;
+                        $infects .= displayFileError('red', 'Possible injection, file to check (Multiple <?php tags found)', $script_name, $fgc);
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                    }
+                    $copy = true;
+                    if($filename == 'index.php') {
+                        $content = cleanIndex($fgc);
+                        if(!empty($content)) {
+                            if(preg_match('/(\/\*[0-9a-f]{5}\*\/|\$_GET\[|\$_POST\[|trustisimportant|EverythingIsLife|monarx|jiamiphp|\\x[ 0-9a-f]{2,}|\.$O[4]\.|=urldecode|cgi_bin|\.ico)/i', $content, $matches))
+                                $indexes .= displayFileError('red', 'MD5 INTEGRITY: Index.php file infected ('.$matches[0].'). Content to be checked absolutely', $script_name, $content);
+                            else
+                                $indexes .= displayFileError('orange', 'MD5 INTEGRITY: File index.php added compared to the original version. Content to check', $script_name, $content);
+                        }
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                        continue;
+                    }
+                    $error2++;
+                    $color2 = '#187ed8';
+                    if(preg_match('/config\//', $file) || preg_match('/parameters\.php/', $file)) {
+                        if($script_name == 'config/settings.inc.old.php') {
+                            @chmod($file, 0644);
+                            unlink($file);
+                            continue;
+                        }
+                        $fgc = preg_replace('/(define\(\'.*?\', )([^)]*)(\);)/m', '$1XXXXXXX$3', $fgc);
+                        if($zip_ok) {
+                            $suspicious_zip->addFromString($script_name, $fgc);
+                            $copy = false;
+                        }
+                    }
+                    if(preg_match('#^(?:admin\/|js\/|img\/|cms\/|css\/|docs\/|pdf\/|themes\/|tmp\/|upload\/| media\/|download\/|localization\/)#i', dirname($script_name))) {
+                        $not_exist .= displayFileError('red', 'Suspicious php file not allowed in this directory', $script_name, $fgc);
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                        $img_name = str_replace('.php', '', $file);
+                        @chmod($file, 0644);
+                        if(unlink($file))
+                            $not_exist .= '<b style="color:#08db08">File '.$script_name.' junk deleted</b><br>';
+                        else
+                            $not_exist .= '<b style="color:red">!!! Failed to delete this file - '.$script_name.' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                        $img_files = glob($img_name.'.*');
+                        foreach($img_files as $img_file) {
+                            if($zip_ok) {
+                                $suspicious_zip->addFile($img_file, basename($img_file));
+                            }
+                            $path_file = str_replace($root_path, '', $img_file);
+                            @chmod($img_file, 644);
+                            if(unlink($img_file))
+                                $not_exist .= '<b style="color:#08db08">File '.$path_file.' junk deleted</b><br>';
+                            else
+                                $not_exist .= '<b style="color:red">!!! Failed to delete this file - '.$path_file.' - contact your host to do so (file is protected from deletion)' .'</b><br>';
+                        }
+                        continue;
+                    }
+                    else {
+                        if(preg_match('/move_uploaded_file|auto_append_file|auto_prepend_file|\$_GET\[|\$_POST\[|trustisimportant|EverythingIsLife|chr(101).chr(118).chr(97).chr(108).chr( 40)|monarx|file_put_contents\s*\(|fwrite|uhex|decoct|bnexazabi|wp-admin|wp-includes|License|60b638ef28394d9c17|indexx\.php|Ð˜Ñ Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ð½Ð¸Ðµ|\$ord\[[0-9]\]|0x5a455553|shaje3|gzuncompress|include\s*\(|"à¦•"|"à¦–"| "à¦—"|"à¦˜"|$_POST\[|\.$O[4]\.|=urldecode|file_get_contents\s*\(|assert\s*\(|github\.io|dyuweyrj |dyuweyrj4|pastebin|eval\s*\(/iU', $fgc, $mmatches)) {
+                            $color2 = 'red';
+                            $not_exist .= displayFileError($color2, 'Non-existent php file in original version that contains functions allowing injection ('.$mmatches[0].')', $script_name, $fgc);
+                        }
+                        else {
+                            $color2 = 'orange';
+                            $not_exist .= displayFileError($color2, 'PHP file does not exist in the original version. Content to be checked', $script_name, $fgc);
+                        }
+                    }
+                    if($copy && $zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                }
+                if(!$original) {
+                    $content_file = $fgc;
+                    $origins = array();
+                    $fgc = preg_replace_callback(
+                            $re,
+                            function($matches) use(&$origins) {
+                                static $n = 0;
+                                $n++;
+                                $i = "\4".$n."\4";
+                                if($matches[0][0] == '\'') { $origins[$i] = $matches[0]; return $i; }
+                                if($matches[0][0] == '"') { $origins[$i] = $matches[0]; return $i; }
+                                return '';
+                            }
+                            , $fgc
+                        );
+                    if(preg_match_all($class_regex, $fgc, $matches)) {
+                        $test = $fgc;
+                        foreach($matches[0] as $match) {
+                            $test = str_replace($match, '', $test);
+                        }
+                        $test = trim(str_replace(array('<?php', '?>'), '', $test));
+                        $test = trim(preg_replace('~^\s*(?:use|namespace)\s+.*$~mxi', '', $test));
+                        if(preg_match_all($function_regex, $test, $fmatches)) {
+                            foreach($fmatches[0] as $fmatch) {
+                                $test = str_replace($fmatch, '', $test);
+                            }
+                            $test = trim($test);
+                        }
+                        foreach($origins as $k => &$m) {
+                            $test = str_replace($k, $m, $test);
+                        }
+                        if(strlen($test)) {
+                            $error2++;
+                            $integrity = false;
+                            $core_control .= displayFileError('orange', 'Lines out of class', $script_name, $test);
+                            if(in_array($file, $to_be_monitored)) {
+                                $bad_heuristic++;
+                                $content_file = str_replace($test, '', $content_file);
+                                if($force) {
+                                    @chmod($file, 0644);
+                                    file_put_contents($file, $content_file);
+                                    $core_control .= '<b style="color:red">Core class corrected: '.$script_name.'</b><br>';
+                                }
+                            }
+                        }
+                    }
+                }
+                else {
+                    if(!$error2 && in_array($file, $to_be_monitored)) {
+                        $heuristic .= '<b style="color:#08db08">Check '.$filename.' => OK</b><br>';
+                    }
+                }
+            }
+            // Modules
+            header('Proceed: '.__LINE__);
+            if(preg_match('/\.\/modules\//', $file)
+                && ($path_parts == 'php')
+            ) {
+                if(preg_match('/(soracaisse|paypal|kerawen|autoupgrade|acaisse|klaviyops\/classes\/)/s', $file)) {
+                    continue;
+                }
+                $original_content = $fgc = file_get_contents($file);
+                if(preg_match('/httpd\.conf|monarx|51la\.icw8\.com|\/a1\.txt|c3e34653504601739f7cbb3f79bb63d2|vhosts\.conf|fetchmailrc|shell_exec|0x5aa5| find_bl\(| f_id_daww| DateStripeV| hex2a \(| sanitas\(| smenu\(|hashcracking\.ru|rednoize\.com|trustisimportant|parse_str#|Ð˜Ñ Ð¿Ð¾Ð»ÑŒÐ·Ð¾Ð²Ð°Ð½Ð¸Ðµ|indexx|parse_str\/|__HALT_COMPILER|die#|die\/|uRlDecode#|uRlDecode\/|\.$O[4]\.|=urldecode|\.fun $|crackfor\.me| WSO| wso| f_id_daww/i', $fgc, $mmatches, PREG_OFFSET_CAPTURE)) {
+                    $risk = $mmatches[0][0];
+                    $bad++;
+                    if($zip_ok) {
+                        $suspicious_zip->addFile($file, $script_name);
+                    }
+                    @chmod($file, 0644);
+                    if(!unlink($file)) {
+                        $modules .= displayFileError('red', 'Dangerous file that must be deleted (deletion failed):', $script_name, $original_content);
+                    }
+                    else {
+                        $modules .= displayFileError('red', 'Dangerous file deleted ('.$risk.')', $script_name, $original_content);
+                    }
+                    continue;
+                }
+                if(preg_match('/netstat|move_uploaded_file|auto_append_file|auto_prepend_file|sys_get_temp_dir\(\),|exploit-db|jiamiphp|github\.io|0x5a455553|file_put_contents|\$_GET\[|\$_POST\[|trustisimpo rtant|EverythingIsLife|GLOBALS|fwrite|include%28|base64_decode|gzinflate|str_rot13|include_once|parse_str#|parse_str\/|__HALT_COMPILER|die#|uRlDecode\/\/|include\(|file_get_contents\(|fwrite|assert\ (|dyuweyrj|dyuweyrj4|pastebin|hex2bin%28|hex2bin\(|eval%28|eval\(/i', $fgc, $mmatches, PREG_OFFSET_CAPTURE)) {
+                    $risk = $mmatches[0][0];
+                    $color_m = in_array(strtolower($risk), array('halt_compiler','die#','parse_str/','parse_str#','include/','include','die/','urldecode/' ,'urldecode#','eval%28','eval(','hex2bin%28','hex2bin(','str_rot13')) ?
+                    if(!$limited) {
+                        $origins = array();
+                        $fgc = preg_replace_callback(
+                                $re,
+                                function ($matches) use (&$origins) {
+                                    static $n = 0;
+                                    $n++;
+                                    $i = "\4".$n."\4";
+                                    if($matches[0][0] == '\'') { $origins[$i] = $matches[0]; return $i; }
+                                    if($matches[0][0] == '"') { $origins[$i] = $matches[0]; return $i; }
+                                    return '';
+                                }
+                                , $fgc
+                            );
+                    }
+                    if(!$limited && preg_match_all($class_regex, $fgc, $matches)) {
+                        $test = $fgc;
+                        foreach($matches[0] as $match) {
+                            $test = str_replace($match, '', $test);
+                        }
+                        $test = trim(str_replace(array('<?php', '?>'), '', $test));
+                        $test = trim(preg_replace('~^\s*(?:use|namespace)\s+.*$~mxi', '', $test));
+                        if(preg_match_all($function_regex, $test, $fmatches)) {
+                            foreach($fmatches[0] as $fmatch) {
+                                $test = str_replace($fmatch, '', $test);
+                            }
+                            $test = trim($test);
+                        }
+                        foreach($origins as $k => &$m) {
+                            $test = str_replace($k, $m, $test);
+                        }
+                        if(preg_match('~'.preg_quote($risk,'~').'~', $test) && strlen($test)) {
+                            $bad++;
+                            $modules .= displayFileError($color_m, 'Sensitive out-of-class function to check: '.$risk, $script_name, $fgc);
+                            if($zip_ok) {
+                                $suspicious_zip->addFile($file, $script_name);
+                            }
+                        }
+                    }
+                    else {
+                        $bad++;
+                        $modules .= displayFileError($color_m, 'Sensitive function to check: '.$risk.'', $script_name, $fgc);
+                        if($zip_ok) {
+                            $suspicious_zip->addFile($file, $script_name);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if($zip_ok) {
+        $suspicious_zip->close();
+    }
+    if(!file_exists($root_path.'img/.htaccess'))
+        file_put_contents($root_path.'img/.htaccess', '<FilesMatch "\.php$">'.PHP_EOL.'<IfModule mod_version.c>'.PHP_EOL.'<IfVersion >= 2.3>'.PHP_EOL.'Require all denied'.PHP_EOL.'</IfVersion>'.PHP_EOL.'<IfVersion < 2.3>'.PHP_EOL.'Order deny,allow'.PHP_EOL.'Deny from all'.PHP_EOL.'</IfVersion>'.PHP_EOL .'</IfModule>'.PHP_EOL.'<IfModule !mod_version.c>'.PHP_EOL.'Order deny,allow'.PHP_EOL.'Deny from all'.PHP_EOL.'</IfModule>'.PHP_EOL.'</FilesMatch>');
+    if(!file_exists($root_path.'localization/.htaccess'))
+        file_put_contents($root_path.'localization/.htaccess', '<IfModule mod_version.c>'.PHP_EOL.'<IfVersion >= 2.3>'.PHP_EOL.'Require all denied'.PHP_EOL.'</IfVersion>'.PHP_EOL .'<IfVersion < 2.3>'.PHP_EOL.'Order deny,allow'.PHP_EOL.'Deny from all'.PHP_EOL.'</IfVersion>'.PHP_EOL.'</IfModule>'.PHP_EOL.'<IfModule ! mod_version.c>'.PHP_EOL.'Order deny,allow'.PHP_EOL.'Deny from all'.PHP_EOL.'</IfModule>');
+    if(!file_exists($root_path.'translations/.htaccess'))
+        file_put_contents($root_path.'translations/.htaccess', '<IfModule mod_version.c>'.PHP_EOL.'<IfVersion >= 2.3>'.PHP_EOL.'Require all denied'.PHP_EOL.'</IfVersion>'.PHP_EOL .'<IfVersion < 2.3>'.PHP_EOL.'Order deny,allow'.PHP_EOL.'Deny from all'.PHP_EOL.'</IfVersion>'.PHP_EOL.'</IfModule>'.PHP_EOL.'<IfModule ! mod_version.c>'.PHP_EOL.'Order deny,allow'.PHP_EOL.'Deny from all'.PHP_EOL.'</IfModule>');
+    if(!file_exists($root_path.'themes/.htaccess'))
+        file_put_contents($root_path.'themes/.htaccess', '<FilesMatch "\.php$">'.PHP_EOL.'<IfModule mod_version.c>'.PHP_EOL.'<IfVersion >= 2.3>'.PHP_EOL.'Require all denied'.PHP_EOL.'</IfVersion>'.PHP_EOL.'<IfVersion < 2.3>'.PHP_EOL.'Order deny,allow'.PHP_EOL.'Deny from all'.PHP_EOL.'</IfVersion>'.PHP_EOL .'</IfModule>'.PHP_EOL.'<IfModule !mod_version.c>'.PHP_EOL.'Order deny,allow'.PHP_EOL.'Deny from all'.PHP_EOL.'</IfModule>'.PHP_EOL.'</FilesMatch>');
+    // Summary
+    if(!$bad) {
+        $modules .= '<b style="color:#08db08">No unsafe code found</b><br>';
+    }
+    if(!$bad1) {
+        $dot_files .= '<b style="color:#08db08">No suspicious .xxx files found</b><br>';
+    }
+    if(!$bad2) {
+        $htaccess_files .= '<b style="color:#08db08">No suspicious htaccess files found</b><br>';
+    }    
+    else {
+        $htaccess_files .= '<b style="color:orange">Please check the addition of php files in these directories (Normally detected in the module search)</b><br>';
+        if($bad3) {
+            $htaccess_files .= '<b style="color:orange">Please check the contents of your main .htaccess file at the root of your site.</b><br>';
+        }
+    }
+    if(!$found_admin) {
+        $admin_files .= '<b style="color:#08db08">The files in your /admin directory are consistent with the original version</b><br>';
+    }
+    if(!$error_js) {
+        $scripts .= '<b style="color:#08db08">No suspicious JS files detected</b><br>';
+    }
+    if(!$bad_image) {
+        $images .= '<b style="color:#08db08">No suspicious image files detected</b><br>';
+        if($limited) {
+            $images .= '<span style="color:orange">Due to the limitations of your server, the analysis of product images has not been carried out.</span><br>';
+        }
+    }
+    if(!$bad_infected) {
+        $infects .= '<b style="color:#08db08">No known suspicious code found</b><br>';
+    }
+    if(!$bad_found) {
+        $bad_added_files .= '<b style="color:#08db08">No known bad files found</b><br>';
+    }
+    if(!$bad_heuristic) {
+        $heuristic .= '<b style="color:#08db08">No sensitive files modified</b><br>';
+    }
+    if(!$bad_perms) {
+        $files_perm .= '<b style="color:#08db08">Write permissions are ok on files and directories</b><br>';
+    }
+    $modules .= '<br><b style="color:#eee">Peak usage: '.round(memory_get_peak_usage()/ 1024).' KB of memory.</b><br>';
+    $html .= $admin_files;
+    $html .= $heuristic;
+    $html .= $core_control;
+    $html .= $scripts;
+    $html .= $images;
+    $html .= $infects;
+    $html .= $bad_added_files;
+    $html .= $files_perm;
+    if(!$md5_list) {
+        $html .= '<b style="color:red">Your version '.(version_compare(VERSION_NUMBER, '1.6.1.26', '>') && version_compare(VERSION_NUMBER, '8.0.0.0', '<') ? 'PhenixSuite' : 'Prestashop').' does not exist in the md5 archives, so the integrity check could not be performed.</b><br>';
+    }
+    $html .= $dot_files;
+    $html .= $htaccess_files;
+    if($indexes) {
+        $html .= '<br><h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 0.3;color:white;">Searching for added index.php:</ h4>'.$indexes;
+    }
+    if($not_exist) {
+        $html .= '<br><h4 style="font-size: 1.1em;margin-bottom: 0.3em;margin-top: 0.3;color:white;">Searching for added php files:</h4 >'.$not_exist;
+    }
+    $html .= $modules;
+    $html .= '<br><h4 style="font-size:1.1em;margin-bottom:0.3em;margin-top:0.3;color:'.(!$integrity ? '#ff5900;' : 'white ;').'">ANALYSIS COMPLETED <span style="font-size:13px"> (Performed in '.round(microtime(true) - $start_time, 3).' sec.)</span ></h4>';
+
+    if($integrity) {
+        $html .= '<br><b style="color:#08db08">Integrity '.(version_compare(VERSION_NUMBER, '1.6.1.26', '>=') && version_compare(VERSION_NUMBER, '1.7.0.0 ', '<') ? 'PhenixSuite': 'Prestashop').' OK: All your core files are compliant or patched</b>';
+    }
+    else {
+        if($md5_list) {
+            $html .= '<br><b style="color:orange">!!! WARNING !!! Some of your heart files have been modified.<br>If these modifications are not intentional, we advise you to compare the files with the 2 zips (suspicious_xxxx and '.(version_compare(VERSION_NUMBER, '1.6.1.26', '>=') && version_compare(VERSION_NUMBER, '1.7.0.0', '<') ? 'PhenixSuite' : 'Prestashop').') and restore them to their original version if necessary.</b><br><br><b style="color:red">IMPORTANT: If the modified heart files start with /**/ you have been hacked. Restore original versions immediately!</b><br>';
+        }
+    }
+    $html .= '<br><br>';
+    if(version_compare(VERSION_NUMBER, '1.6.0.0', '>=') && version_compare(VERSION_NUMBER, '1.7.0.0', '<')) {
+        $md5_filemanager = false;
+        $api_url = 'https://raw.githubusercontent.com/dominictayloruk/prestashop-cleaner/main/scripts/filemanager_md5.json';
+        $md5_file = file_get_contents($api_url, false, stream_context_create($arrContextOptions));
+        if($md5_file) {
+            $md5_filemanager = json_decode($md5_file);
+        }
+        if(!is_object($md5_filemanager)) {
+            $md5_filemanager = false;
+        }
+        $found = 0;
+        $link = $root_directory.'/**admin**/filemanager';
+        $files1 = glob($root_path.$admin_dir .'/filemanager/*.php');
+        $files2 = glob($root_path.$admin_dir .'/filemanager/*/*.php');
+        $files = array_merge($files1, $files2);
+        foreach($files as $file) {
+            $script_name = str_replace($root_path.$admin_dir, 'admin', $file);
+            if(basename($script_name) != 'index.php' && !empty($md5_filemanager->{$script_name}) && $md5_filemanager->{$script_name} != md5_file($file)) {
+                $found++;
+                $html .= '<b style="color:orange">>>> FILEMANAGER WARNING <<<: Unpatched file '.$link .'</b><br>';
+                break;
+            }
+        }
+        if($found) {
+            $html .= '<br><b style="color:orange">Your version has a potential vulnerability in the '.$link.' directory. Please download the patched version and unzip it in your admin directory</b><br><br>';
+            $html .= '<a href="https://raw.githubusercontent.com/dominictayloruk/prestashop-cleaner/main/scripts/filemanager.zip"><button style="cursor:pointer">Download the protected version of the directory '.$link.'</button></a><br>';
+            $html .= '<b style="color:orange">or</b><br>';
+            $html .= '<form action="'.$_SERVER['REQUEST_URI'].'" method="POST"><input type="submit" name="update_filemanager" value="Patch directory" style ="cursor:pointer"/></form><br>';
+        }
+        else {
+            $html .= '<b style="color:#08db08">INFO: Your site has the patched version of the '.$link.' directory</b><br><br>';
+        }
+    }
+    if(version_compare(VERSION_NUMBER, '1.7.0.0', '<') && version_compare(VERSION_NUMBER, '1.6.1.27', '<')) {
+        $html .= '<p style="text-align:center">The latest PhenixSuite version updated PHP8 compatible for your version 1.6 is available!<br>';
+        $html .= '<a href="https://eoliashop.com/prestashop-new"><button style="cursor:pointer;color:white;padding: 7px 9px;background-color: #268CCD !important; border-radius: 5px;">Learn more</button></a></p><br>';
+    }
+    $html .= '<a href="https://eoliashop.com/" style="color: #6464f2;float:right;padding: 5px;text-decoration:none;" target="_blank">EoliaShop ©</a><br><br>';
+    if(version_compare(VERSION_NUMBER, '1.6.1.27', '<=') || version_compare(VERSION_NUMBER, '1.7.0.0', '>=')) {
+        // https://www.prestashop.com/download/old/prestashop_'.VERSION_NUMBER.'.zip
+        $html .= '<a href="https://github.com/PrestaShop/PrestaShop/releases/download/'.VERSION_NUMBER.'/prestashop_'.VERSION_NUMBER.'.zip"><button style="cursor:pointer ;text-decoration:none;">Download the archive of your original Prestashop version '.VERSION_NUMBER.'</button></a><br><br>';
+        $html .= 'If the link no longer works (Prestashop having recently modified its urls) you can find your version here: https://www.johanncorbel.fr/versions-de-prestashop/<br><br>';
+    }
+    if(version_compare(phpversion(), '7.0.0', '<')) {
+        @ini_set('pcre.jit', 0);
+        @ini_set('pcre.backtrack_limit', 500000);
+        @ini_set('pcre.recursion_limit', 500000);
+    }
+    @require_once(dirname(__file__).'/config/config.inc.php');
+    $current_url = Tools::getHttpHost(true).__PS_BASE_URI__.'/'.$latest_filename;
+    $zip_url = str_replace($latest_filename, 'suspicious_'.$encoded.'.zip', $current_url);
+    if($zip_ok) {
+        if(file_exists($zip_filename)) {
+            $html .= '<a href="'.$zip_url.'"><button style="cursor:pointer;background: orange;border: 2px solid orange;border-style: outset;border-radius: 2px;text -decoration:none;">Download the archive of files to check</button></a><br><br>';
+        }
+        if(!file_exists($daily_zip)) {
+            copy($zip_filename, $daily_zip);
+        }
+    }
+    $doc = new DOMDocument();
+    $doc->preserveWhiteSpace = false;
+    @$doc->loadHTML($html);
+    $selector = new DOMXPath($doc);
+    foreach($selector->query('//div[contains(attribute::class, "slide-out")]') as $e) {
+        $e->parentNode->removeChild($e);
+    }
+    $message = $doc->saveHTML($doc->documentElement);
+    $message = str_replace('<div style="position:relative">', '<div style="position:relative;line-height:0.7em">', $message);
+    $message = str_replace(' <button onclick="toggleSideNav(this)">View</button>', '', $message);
+    $message .= '<br><pre><h3 style="font-size: 1.2em;padding:20px 5px 30px;color:white;">This script was executed today at '.date('H:i:s').' from '.$current_url.'<br>IP of the caller: '.getIpAddress().'<br>If you are not the originator of this action, please check your FTP access or verify those who have it.<br>If in doubt, you can contact me on github at @dominictayloruk</h3></pre></body></html>';
+    $message = str_replace('background:black;padding:15px 15px 30px;color:white;', 'max-width:1200px;width:100%;word-wrap: break-word;background:black;padding:15px 15px 30px;color:white;', $message);
+    if($bad3) Tools::generateHtaccess();
+    $admin = Db::getInstance()->getRow('
+        SELECT `email`, `lastname`, `firstname`
+        FROM `'._DB_PREFIX_.'employee`
+        WHERE `id_profile` = 1 AND `active` = 1
+        ORDER BY '.(version_compare(VERSION_NUMBER, '1.6.0.0', '>=') ? '`last_connection_date` DESC,' : '').' `employee_id`');
+    $to = '=?UTF-8?B?' . base64_encode($admin['firstname'].' '.$admin['lastname']).'?= <'.$admin['email'].'>';
+    $subject = '=?UTF-8?B?' . base64_encode('INFO: An analysis of your site '.$_SERVER['HTTP_HOST'].' has been launched from the Prestashop Cleaner script') .'?=';
+    $headers[] = 'MIME-Version: 1.0';
+    $headers[] = 'Content-Type: text/html; charset=utf-8';
+    $headers[] = 'From: Security scan <'.$encoded.'@'.$_SERVER['HTTP_HOST'].'>';
+    $headers[] = 'Content-Transfer-Encoding: base64';
+    mail($to, $subject, base64_encode($message), implode("\r\n", $headers));
+    $html .= '<a href="'.$_SERVER['REQUEST_URI'].'"><button style="cursor:pointer;text-decoration:none;">Restart script</button></a >';
+    if($escaped) {
+        $html .= '<p style="margin-top: 10px;margin-bottom: -1em;color: darkviolet;">Files larger than 450KB excluded from analysis to avoid script crash due to memory outage (segmentation fault):<br>'.$escaped.'<br>If you think your server can analyze them, click below</p>
+        <form action="'.$_SERVER['REQUEST_URI'].'" method="post" style="display: table;">
+            <input type="hidden" name="full" value="1">
+            <input type="submit" value="Restart full scan of ALL files" />
+        </form>';
+    }
+    $html .= '
+        </pre>
+            <script text="javascript">
+                function isHidden(el) {
+                    return ((window.getComputedStyle(el).getPropertyValue("display") === "none") || (window.getComputedStyle(el).getPropertyValue("visibility") === "hidden"))
+                }
+                function toggleSideNav(el) {
+                    var nextDiv = el.nextSibling;
+                    if(isHidden(nextDiv)) {
+                        var detailBlocks = document.getElementsByClassName("slide-out");
+                        Array.prototype.forEach.call(detailBlocks, function(detailBlock) {
+                            detailBlock.style.cssText = "display:none";
+                            detailBlock.previousSibling.innerText = "View";
+                        });
+                        nextDiv.style.cssText = "display:block";
+                        el.innerText = "Hide";
+                        el.scrollIntoView({
+                            behavior: "smooth",
+                            block: "start"
+                        });
+                    }
+                    else {
+                        nextDiv.style.cssText = "display:none";
+                        el.innerText = "View";
+                    }
+                }
+            </script></body></html>';
+        if(!$integrity) {
+            if(file_exists($root_path.'cache/class_index.php')) {
+                @unlink($root_path.'cache/class_index.php');
+            }
+            if(file_exists($root_path.'cache/classes/index.php')) {
+                @unlink($root_path.'cache/classes/index.php');
+            }
+            // Some hostings as OVH cloud crashes because 160s max
+            if(!preg_match('#/home/#', $root_path)) {
+                if(version_compare(VERSION_NUMBER, '1.7.0.0', '<=')) {
+                    $cache_folder_compile = $root_path.'cache/smarty/compile';
+                    $cache_folder_cache = $root_path.'cache/smarty/cache';
+                    if(file_exists($cache_folder_compile)) {
+                        recursiveDeleteDirAndFiles($cache_folder_compile);
+                    }
+                    if(file_exists($cache_folder_cache)) {
+                        recursiveDeleteDirAndFiles($cache_folder_cache);
+                    }
+                }
+                else {
+                    $cache_folder = $root_path.'var/cache';
+                    if(file_exists($cache_folder)) {
+                        recursiveDeleteDirAndFiles($cache_folder);
+                    }
+                    else {
+                        $cache_folder = $root_path.'app/cache';
+                        if(file_exists($cache_folder)) {
+                            recursiveDeleteDirAndFiles($cache_folder);
+                        }
+                    }
+                }
+                $html .= '<br><br><b style="color:#08db08">Cache cleaning '.(version_compare(VERSION_NUMBER, '1.6.1.26', '>') && version_compare(VERSION_NUMBER, '1.7. 0.0', '<') ? 'PhenixSuite': 'Prestashop').' carried out</b><br>';
+            }
+        }
+    die($html);
+}
+function displayFileError($color, $message, $file, $content = false)
+{
+    global $root_directory;
+    $script_name = str_replace('./', '', $file);
+    return '<div style="position:relative"><span style="font-weight:700;color:'.$color.'">'
+        .htmlspecialchars($message).' => '.htmlspecialchars($root_directory.'/'.$script_name).'</span>'.
+        ($content ? ' <button onclick="toggleSideNav(this)">View</button><div class="slide-out">'
+        .htmlspecialchars($content).'</div>': '').'</div>';
+}
+function cleanIndex($content)
+{
+    // Doekia
+    $content = preg_replace('~/\*([^*]|[\r\n]|(\*+([^*/]|[\r\n])))*\*+/~m ', '', $content);
+    $content = preg_replace('~header\(.*\);~mU','',$content);
+    $content = preg_replace('~<\?php~mU','',$content);
+    $content = preg_replace('~exit+(|\(\));~mU','',$content);
+    $content = preg_replace('~\?>~mU','',$content);
+    $content = trim($content);
+    return $content;
+}
+function getIpAddress()
+{
+    $ipAddress = '';
+    if(!empty($_SERVER["HTTP_CF_CONNECTING_IP"])) {
+        return $_SERVER["HTTP_CF_CONNECTING_IP"];
+    }
+    if(!empty($_SERVER['HTTP_CLIENT_IP'])) {
+        $ipAddress = $_SERVER['HTTP_CLIENT_IP'];
+    }
+    else if(!empty($_SERVER['HTTP_X_FORWARDED_FOR'])) {
+        $ipAddressList = explode(',', $_SERVER['HTTP_X_FORWARDED_FOR']);
+        foreach($ipAddressList as $ip) {
+            if(!empty($ip)) {
+                $ipAddress = $ip;
+                break;
+            }
+        }
+    }
+    else if(!empty($_SERVER['HTTP_X_FORWARDED'])) {
+        $ipAddress = $_SERVER['HTTP_X_FORWARDED'];
+    }
+    else if(!empty($_SERVER['HTTP_X_CLUSTER_CLIENT_IP'])) {
+        $ipAddress = $_SERVER['HTTP_X_CLUSTER_CLIENT_IP'];
+    }
+    else if(!empty($_SERVER['HTTP_FORWARDED_FOR'])) {
+        $ipAddress = $_SERVER['HTTP_FORWARDED_FOR'];
+    }
+    else if(!empty($_SERVER['HTTP_FORWARDED'])) {
+        $ipAddress = $_SERVER['HTTP_FORWARDED'];
+    }
+    else if(!empty($_SERVER['REMOTE_ADDR'])) {
+        $ipAddress = $_SERVER['REMOTE_ADDR'];
+    }
+    return $ipAddress;
+}
+function postmortem()
+{
+   $resp = http_response_code();
+   if(in_array($resp,array(500,504))) {
+      file_put_contents(__DIR__.'/cleaner500.log', print_r(array(
+          date('c'),
+          '$_SERVER' => $_SERVER,
+          'input' => file_get_contents('php://input'),
+          error_get_last(),
+      ), 1));
+   }
+}
+function cleanDirectory($dir)
+{
+    $it = new RecursiveDirectoryIterator($dir, RecursiveDirectoryIterator::SKIP_DOTS);
+    $files = new RecursiveIteratorIterator($it,
+                 RecursiveIteratorIterator::CHILD_FIRST);
+    foreach($files as $file) {
+        if ($file->isDir()){
+            rmdir($file->getRealPath());
+        }
+        else {
+            unlink($file->getRealPath());
+        }
+    }
+}
+function recursiveDeleteDirAndFiles($src, $all = true)
+{
+    if($dir = opendir($src)) {
+        while(false !== ($file = readdir($dir))) {
+            if(($file != '.') && ($file != '..')) {
+                if(is_dir($src.'/'.$file)) {
+                    recursiveDeleteDirAndFiles($src.'/'.$file);
+                }
+                else {
+                    unlink($src.'/'.$file);
+                }
+            }
+        }
+        closedir($dir);
+        if($all) {
+            rmdir($src);
+        }
+    }
+}
+function memoryTest()
+{
+    $initial_memory = ini_get('memory_limit');
+    if(ini_set('memory_limit', '-1') === false) {
+        $memory_limit = $initial_memory;
+    }
+    else {
+        $memory_limit = '-1';
+    }
+
+    $memory = array('memory_limit' => $memory_limit, 'display' => 'No limit');
+    if(preg_match('/^(\d+)(.)$/i', $memory_limit, $matches)) {
+        if($matches[2] == 'T') {
+            $memory_limit = $matches[1]*(1024 ** 4);
+        }
+        elseif($matches[2] == 'G') {
+            $memory_limit = $matches[1]*(1024 ** 3);
+        }
+        elseif($matches[2] == 'M') {
+            $memory_limit = $matches[1]*(1024 ** 2);
+        }
+        elseif($matches[2] == 'K') {
+            $memory_limit = $matches[1]*1024;
+        }
+        $memory['memory_limit'] = $memory_limit;
+        $memory['display'] = $matches[1].$matches[2];
+    }
+    return $memory;
+}
+class DirFilter extends RecursiveFilterIterator
+{
+    public function accept() {
+        $excludes = array('cache', 'log', 'logs', 'stats', 'error', 'import', 'export', 'm4pdf', 'psaddonsconnect', 'bin', 'var', ' vendor', 'p', 'ps_checkout', 'ps_metrics', 'ps_accounts');
+        return !(!$this->isDot() && $this->isDir() && in_array($this->getFilename(), $excludes));
+    }
+}
