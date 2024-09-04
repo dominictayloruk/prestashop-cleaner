@@ -55,7 +55,7 @@ if(!$ok) {
 $root_path = getcwd().'/';
 $root_directory = basename($root_path);
 $updating = false;
-$protocol = $_SERVER['HTTPS'] ? 'https://': 'http://';
+$protocol = (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] === 'on') ? 'https://' : 'http://';
 $arrContextOptions = array(
     "ssl" => array(
         "verify_peer" => false,
