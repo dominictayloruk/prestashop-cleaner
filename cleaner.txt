@@ -4,7 +4,7 @@
 * Prestashop Cleaner
 */
 
-$version = '3.4.23';
+$version = '3.4.24';
 
 global $root_path, $root_directory, $limited;
 $initial_time_out = ini_get('max_execution_time');
@@ -474,7 +474,7 @@ if(!$updating) {
                             if($zip_ok) {
                                 $suspicious_zip->addFile($file, $script_name);
                             }
-                            if(preg_match('/(\/\*[0-9a-f]{5}\*\/|trustisimportant|EverythingIsLife|\\x[0-9a-f]{2,})/i', $ content, $matches)) {
+                            if(preg_match('/(\/\*[0-9a-f]{5}\*\/|trustisimportant|EverythingIsLife|\\x[0-9a-f]{2,})/i', $content, $matches)) {
                                 $admin_files .= displayFileError('red', 'MD5 ADMIN INTEGRITY: Index.php file infected ('.$matches[0].'). Content must be restored', str_replace('admin', '** admin**', $script_name), $content);
                             }
                             else {
